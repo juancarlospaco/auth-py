@@ -370,8 +370,8 @@ class AsyncGoTrueClient(AsyncGoTrueBaseAPI):
                     "gotrue_meta_security": {
                         "captcha_token": captcha_token,
                     },
+                    "redirect_to": redirect_to,
                 },
-                redirect_to=redirect_to,
                 xform=parse_sso_response,
             )
         if provider_id:
@@ -384,8 +384,8 @@ class AsyncGoTrueClient(AsyncGoTrueBaseAPI):
                     "gotrue_meta_security": {
                         "captcha_token": captcha_token,
                     },
+                    "redirect_to": redirect_to,
                 },
-                redirect_to=redirect_to,
                 xform=parse_sso_response,
             )
         raise AuthInvalidCredentialsError(
@@ -410,10 +410,10 @@ class AsyncGoTrueClient(AsyncGoTrueBaseAPI):
             params["redirect_to"] = redirect_to
         if scopes:
             params["scopes"] = scopes
-        url = await self._get_url_for_provider(
+        url_with_qs, _ = await self._get_url_for_provider(
             f"{self._url}/authorize", provider, params
         )
-        return OAuthResponse(provider=provider, url=url)
+        return OAuthResponse(provider=provider, url=url_with_qs)
 
     async def link_identity(
         self, credentials: SignInWithOAuthCredentials
@@ -428,9 +428,8 @@ class AsyncGoTrueClient(AsyncGoTrueBaseAPI):
         if scopes:
             params["scopes"] = scopes
         params["skip_http_redirect"] = "true"
-        url = await self._get_url_for_provider(
-            "user/identities/authorize", provider, params
-        )
+        url = "user/identities/authorize"
+        _, query = await self._get_url_for_provider(url, provider, params)
 
         session = await self.get_session()
         if not session:
@@ -439,6 +438,7 @@ class AsyncGoTrueClient(AsyncGoTrueBaseAPI):
         response = await self._request(
             method="GET",
             path=url,
+            query=query,
             jwt=session.access_token,
             xform=parse_link_identity_response,
         )
@@ -721,12 +721,10 @@ class AsyncGoTrueClient(AsyncGoTrueBaseAPI):
 
     async def sign_out(self, options: SignOutOptions = {"scope": "global"}) -> None:
         """
-        Inside a browser context, `sign_out` will remove the logged in user from the
-        browser session and log them out - removing all items from localstorage and
-        then trigger a `"SIGNED_OUT"` event.
+        `sign_out` will remove the logged in user from the
+        current session and log them out - removing all items from storage and then trigger a `"SIGNED_OUT"` event.
 
-        For server-side management, you can revoke all refresh tokens for a user by
-        passing a user's JWT through to `api.sign_out`.
+        For advanced use cases, you can revoke all refresh tokens for a user by passing a user's JWT through to `admin.sign_out`.
 
         There is no way to revoke a user's access token jwt until it expires.
         It is recommended to set a shorter expiry on the jwt for this reason.
@@ -737,9 +735,9 @@ class AsyncGoTrueClient(AsyncGoTrueBaseAPI):
             if access_token:
                 await self.admin.sign_out(access_token, options["scope"])
 
-            if options["scope"] != "others":
-                await self._remove_session()
-                self._notify_all_subscribers("SIGNED_OUT", None)
+        if options["scope"] != "others":
+            await self._remove_session()
+            self._notify_all_subscribers("SIGNED_OUT", None)
 
     def on_auth_state_change(
         self,
@@ -1109,7 +1107,7 @@ class AsyncGoTrueClient(AsyncGoTrueBaseAPI):
         url: str,
         provider: Provider,
         params: Dict[str, str],
-    ) -> str:
+    ) -> Tuple[str, Dict[str, str]]:
         if self._flow_type == "pkce":
             code_verifier = generate_pkce_verifier()
             code_challenge = generate_pkce_challenge(code_verifier)
@@ -1124,7 +1122,7 @@ class AsyncGoTrueClient(AsyncGoTrueBaseAPI):
 
         params["provider"] = provider
         query = urlencode(params)
-        return f"{url}?{query}"
+        return f"{url}?{query}", params
 
     def _decode_jwt(self, jwt: str) -> DecodedJWTDict:
         """
@@ -1138,7 +1136,8 @@ class AsyncGoTrueClient(AsyncGoTrueBaseAPI):
         )
         response = await self._request(
             "POST",
-            "token?grant_type=pkce",
+            "token",
+            query={"grant_type": "pkce"},
             body={
                 "auth_code": params.get("auth_code"),
                 "code_verifier": code_verifier,
